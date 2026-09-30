@@ -1,0 +1,224 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Forwards watchmy.cloud alerts to Microsoft Teams, Discord or PagerDuty.
+  One Lambda function behind a public function URL. It rejects any request
+  without a valid watchmy.cloud signature.
+
+Parameters:
+  WebhookSecret:
+    Type: String
+    NoEcho: true
+    Description: Signing secret of your watchmy.cloud webhook channel
+  Target:
+    Type: String
+    AllowedValues: [teams, discord, pagerduty]
+  Destination:
+    Type: String
+    NoEcho: true
+    Description: Teams or Discord webhook URL, or PagerDuty integration key
+
+Resources:
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  Function:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Forwards watchmy.cloud alerts
+      Runtime: python3.13
+      Handler: index.handler
+      Timeout: 9
+      MemorySize: 128
+      Role: !GetAtt Role.Arn
+      Environment:
+        Variables:
+          WATCHMY_WEBHOOK_SECRET: !Ref WebhookSecret
+          TARGET: !Ref Target
+          DESTINATION: !Ref Destination
+      Code:
+        # Same code as forward.py. The tests fail if the two drift.
+        ZipFile: |
+          """Forward watchmy.cloud alerts to Microsoft Teams, Discord or PagerDuty.
+
+          An AWS Lambda function behind a function URL. Standard library only.
+          Environment:
+            WATCHMY_WEBHOOK_SECRET  signing secret of your watchmy.cloud webhook channel
+            TARGET                  teams | discord | pagerduty
+            DESTINATION             Teams or Discord webhook URL, or PagerDuty integration key
+          """
+          import base64
+          import hashlib
+          import hmac
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          TOLERANCE_SECONDS = 300
+          APP_URL = "https://app.watchmy.cloud/alerts"
+          PAGERDUTY_URL = "https://events.pagerduty.com/v2/enqueue"
+          # Discord sits behind Cloudflare, which blocks the default "Python-urllib" agent.
+          USER_AGENT = "watchmy-cloud-forward/1 (+https://github.com/watchmy-cloud/examples)"
+
+
+          def verify(secret, timestamp, signature, raw_body, now=None):
+              try:
+                  age = abs((now or time.time()) - int(timestamp))
+              except (TypeError, ValueError):
+                  return False
+              if age > TOLERANCE_SECONDS:
+                  return False
+              signed = f"{timestamp}.".encode() + raw_body
+              expected = "v1=" + hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
+              return hmac.compare_digest(expected, signature or "")
+
+
+          def usd(amount):
+              return f"${float(amount):,.2f}"
+
+
+          def facts(alert):
+              """The few lines worth reading at 3 a.m., as (name, value) pairs."""
+              account = alert["account"]
+              rows = [("Account", f"{account['label']} ({account['id']})"),
+                      ("Rule", alert["rule_type"])]
+              if alert.get("over_usd"):
+                  rows.append(("Over expected", usd(alert["over_usd"])))
+              for driver in alert.get("top_drivers") or []:
+                  name = driver.get("service") or driver["category"]
+                  rows.append(("Driver", f"{name} +{usd(driver['delta_usd'])}"))
+              return rows
+
+
+          def title(alert):
+              return f"AWS spend alert: {alert['account']['label']}"
+
+
+          def teams(event, _destination):
+              alert = event["alert"]
+              card = {
+                  "type": "AdaptiveCard",
+                  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                  "version": "1.4",
+                  "body": [
+                      {"type": "TextBlock", "text": title(alert), "weight": "Bolder", "size": "Medium", "wrap": True},
+                      {"type": "TextBlock", "text": alert["message"], "wrap": True},
+                      {"type": "FactSet", "facts": [{"title": k, "value": v} for k, v in facts(alert)]},
+                  ],
+                  "actions": [{"type": "Action.OpenUrl", "title": "Open in watchmy.cloud", "url": APP_URL}],
+              }
+              return {"type": "message", "attachments": [
+                  {"contentType": "application/vnd.microsoft.card.adaptive", "content": card}]}
+
+
+          def discord(event, _destination):
+              alert = event["alert"]
+              return {
+                  "allowed_mentions": {"parse": []},  # an account label can never ping @everyone
+                  "embeds": [{
+                      "title": title(alert)[:256],
+                      "description": alert["message"][:4096],
+                      "url": APP_URL,
+                      "color": 0xE5484D,
+                      "timestamp": alert["triggered_at"],
+                      "fields": [{"name": k, "value": v, "inline": True} for k, v in facts(alert)],
+                  }],
+              }
+
+
+          def pagerduty(event, destination):
+              alert = event["alert"]
+              return {
+                  "routing_key": destination,
+                  "event_action": "trigger",
+                  "dedup_key": event["alert_event_id"],  # a retry updates the incident, never opens a second
+                  "payload": {
+                      "summary": f"{title(alert)}. {alert['message']}"[:1024],
+                      "source": f"aws:{alert['account']['id']}",
+                      "severity": "warning",
+                      "timestamp": alert["triggered_at"],
+                      "custom_details": dict(facts(alert)),
+                  },
+                  "links": [{"href": APP_URL, "text": "Open in watchmy.cloud"}],
+              }
+
+
+          FORMATS = {"teams": teams, "discord": discord, "pagerduty": pagerduty}
+
+
+          def post(url, payload):
+              """Returns the HTTP status, or 0 when the target could not be reached."""
+              request = urllib.request.Request(
+                  url, data=json.dumps(payload).encode(), method="POST",
+                  headers={"Content-Type": "application/json", "User-Agent": USER_AGENT})
+              try:
+                  with urllib.request.urlopen(request, timeout=7) as response:
+                      return response.status
+              except urllib.error.HTTPError as error:
+                  return error.code
+              except (urllib.error.URLError, TimeoutError):
+                  return 0
+
+
+          def reply(status, text):
+              return {"statusCode": status, "body": text}
+
+
+          def handler(event, _context):
+              headers = event.get("headers") or {}
+              raw = event.get("body") or ""
+              raw_body = base64.b64decode(raw) if event.get("isBase64Encoded") else raw.encode()
+
+              if not verify(os.environ["WATCHMY_WEBHOOK_SECRET"],
+                            headers.get("x-watchmycloud-timestamp"),
+                            headers.get("x-watchmycloud-signature"), raw_body):
+                  return reply(401, "bad signature")
+
+              target = os.environ["TARGET"]
+              destination = os.environ["DESTINATION"]
+              payload = FORMATS[target](json.loads(raw_body), destination)
+              status = post(PAGERDUTY_URL if target == "pagerduty" else destination, payload)
+
+              if 200 <= status < 300:
+                  return reply(200, "forwarded")
+              if status in (0, 408, 429) or status >= 500:
+                  return reply(503, f"{target} unavailable ({status}), retry later")  # watchmy.cloud retries
+              return reply(424, f"{target} rejected the message ({status}), check DESTINATION")  # no retry
+
+  Url:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !Ref Function
+      AuthType: NONE
+
+  # A public URL needs both statements. The signature check is the lock.
+  UrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Function
+      Action: lambda:InvokeFunctionUrl
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
+  InvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Function
+      Action: lambda:InvokeFunction
+      Principal: '*'
+      InvokedViaFunctionUrl: true
+
+Outputs:
+  WebhookUrl:
+    Description: Paste this URL into your watchmy.cloud webhook channel
+    Value: !GetAtt Url.FunctionUrl

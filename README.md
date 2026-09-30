@@ -15,6 +15,10 @@ When a rule fires, we POST the alert as JSON to your URL. We sign each request. 
 
 Both listen on `POST /watchmy-cloud`, port 8000. Each is about 50 lines.
 
+## Forward to Teams, Discord or PagerDuty
+
+[`forward`](forward) is a ready AWS Lambda function. It checks our signature and passes each alert on to Microsoft Teams, Discord or PagerDuty. One CloudFormation stack, no servers, no dependencies.
+
 ## Check the signature
 
 Every request carries three headers:

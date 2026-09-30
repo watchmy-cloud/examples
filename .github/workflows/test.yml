@@ -33,3 +33,16 @@ jobs:
           node-version: "22"
       - run: npm install --no-audit --no-fund
       - run: npm test
+
+  forward:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: forward
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: pip install pyyaml  # tests only; the function itself needs nothing
+      - run: python -m unittest -v
