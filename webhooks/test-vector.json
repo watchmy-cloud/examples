@@ -1,0 +1,6 @@
+{
+  "secret": "example-secret-do-not-use",
+  "timestamp": "1790000000",
+  "body": "{\"alert\":{\"account\":{\"id\":\"123456789012\",\"label\":\"Prod\"},\"currency\":\"USD\",\"current_value\":\"142.50\",\"message\":\"EC2 +$38.10. Daily AWS spend $142.50 vs ~$100.00 average (up 42%, threshold 30%)\",\"over_usd\":\"42.50\",\"rule_type\":\"daily_anomaly\",\"threshold_value\":\"100.00\",\"top_drivers\":[{\"category\":\"compute\",\"delta_usd\":38.1,\"service\":\"Amazon Elastic Compute Cloud - Compute\",\"service_delta_usd\":38.1}],\"triggered_at\":\"2026-09-21T07:00:00Z\"},\"alert_event_id\":\"5f0c8b2e-1c3d-4a5b-9e7f-2a1b3c4d5e6f\",\"channel_id\":\"a1b2c3d4-5e6f-7a8b-9c0d-1e2f3a4b5c6d\",\"schema_version\":1}",
+  "signature": "v1=a44aa10ed67763c9da04f96f224acea88356c3f873cae5a163b9ce460a3905fc"
+}
