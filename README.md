@@ -1,5 +1,5 @@
 # examples
 
-Code examples for the [watchmy.cloud](https://watchmy.cloud) API and webhooks.
+Code for the [watchmy.cloud](https://watchmy.cloud) webhooks and API.
 
-Coming soon: webhook signature verification (Python, Node) and API usage examples.
+Our webhook sends each alert as signed JSON. Your code checks the signature, then acts on the alert. Examples in Python and Node are on the way.
