@@ -4,6 +4,8 @@
 
 Code that receives [watchmy.cloud](https://watchmy.cloud) alerts. Every example runs its tests on each push.
 
+watchmy.cloud is a hosted service with a flat fee and a 30-day free trial. These are client examples, not the product.
+
 ## Webhook receivers
 
 When a rule fires, we POST the alert as JSON to your URL. We sign each request. Your code checks the signature, answers 200, then acts on the alert.
